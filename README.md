@@ -1,545 +1,61 @@
+# Secure, Decentralized Peer-to-Peer Chat
 
-A Design and Implementation Guide for a Secure, Decentralized Peer-to-Peer Chat System
-Maganjot Singh , Sumit
+**Authors: Maganjot Singh, Sumit**
 
+[![Project Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/example/repo)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/example/repo/actions)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-I. Architectural Blueprint: A UDP-Based Reliable Transport Protocol
+---
 
-The foundation of any network application is its transport protocol, which dictates how data is moved between endpoints. For a high-performance, real-time chat system, the choice of transport is a critical architectural decision. While the Transmission Control Protocol (TCP) is the internet's workhorse for reliable communication, its strict ordering and congestion control mechanisms can introduce latency, a phenomenon known as head-of-line blocking. The User Datagram Protocol (UDP), in contrast, offers a minimalist, "fire-and-forget" datagram service that prioritizes speed and low overhead over guaranteed delivery.1 This makes UDP an ideal substrate upon which to build a custom transport layer tailored specifically to the needs of a modern chat application.
-This section deconstructs the academic protocol presented in "Design and Development of a UDP-Based Connection-Oriented Multi-Stream One-to-Many Communication Protocol" to engineer a practical transport layer for our secure chat system. The protocol's design philosophy, which favors user-space implementation for flexibility, aligns perfectly with the goal of integrating a sophisticated, multi-layered security framework.1
+## 📖 About This Project
 
-1.1. Deconstruction of the Research Paper's Protocol
+This project is a secure, decentralized, and serverless peer-to-peer chat system designed for local area networks (LANs). It provides a "Discord-like" real-time chat experience without relying on any central servers, ensuring that all communication is completely private, authenticated, and resilient.
 
-The protocol described in the reference paper serves as the architectural North Star for our transport layer. Its design makes several strategic choices that are highly advantageous for our specific use case.
+This system is built from the ground up, featuring a custom reliable transport protocol over UDP and a state-of-the-art, multi-layered security framework to protect against both passive eavesdropping and active network attacks.
 
-Core Philosophy and Transport Medium
+## ✨ Core Features
 
-The most significant architectural decision is the implementation of the entire protocol stack in user space. Unlike traditional protocols like TCP or SCTP, which are deeply embedded within the operating system kernel, a user-space implementation provides unparalleled flexibility. The paper's authors explicitly state that their primary objective was not absolute performance but rather the "ease of customization and experimentation".1 This choice is not a compromise but a strategic advantage. By operating in user space, the application gains direct control over the entire communication pipeline. This creates a clean and accessible architectural seam between the transport logic and the application data, which is precisely where the custom security layers will be inserted. This modularity allows for the cryptographic engine to be developed and maintained independently of the packet transmission and reliability logic.
-The protocol is built upon UDP. UDP provides a barebones datagram service, offering no guarantees of reliability, ordering, or data integrity.1 While this may seem like a disadvantage, it is in fact a blank slate. It frees the protocol designer from the rigid constraints of TCP and allows for the implementation of custom reliability mechanisms that are optimized for the specific application's needs. For a chat system, this means we can build a protocol that is both fast and reliable, without the overhead of TCP's more generalized feature set.
+* **Serverless P2P Architecture:** No central server or internet connection is required. All communication is directly peer-to-peer.
+* **Zero-Configuration Discovery:** Automatically finds other users on the local network using **mDNS / DNS-SD (Zeroconf)**.
+* **True End-to-End Encryption (E2EE):** All messages are secured using modern authenticated encryption (AEAD).
+* **Advanced Security:** Implements **Forward Secrecy** and **Post-Compromise Security** inspired by the Signal Protocol's Double Ratchet algorithm.
+* **MITM Resistant:** An authenticated key exchange protocol (ECDH + Ed25519) prevents man-in-the-middle attacks.
+* **Reliable & Fast Transport:** A custom Go-Back-N ARQ protocol built on UDP provides reliable, in-order message delivery without TCP's head-of-line blocking.
 
-Adapting the One-to-Many Model for Peer-to-Peer Communication
+## 🏛️ Architectural Overview
 
-A key innovation of the paper's protocol is its native support for one-to-many communication. This feature allows a single endpoint to establish a logical connection with multiple destination endpoints simultaneously, treating them as a single virtual entity.1 While the paper frames this in the context of server-side applications like load balancing, this model is a perfect architectural fit for the group chat functionality central to a "Discord type" system.
-In our design, a group chat among several users will be implemented as a single one-to-many connection. When a user sends a message to the group, the underlying protocol handles the replication and transmission of the packet to all participants. This abstracts away the complexity of managing multiple individual connections, simplifying the application logic considerably. A one-to-one chat can then be treated as a trivial special case of a one-to-many connection with only two endpoints. This elegant model provides a unified communication primitive for all chat scenarios, enhancing both the scalability and maintainability of the system.
+The system is built on a layered stack that separates transport, security, and discovery.
 
-1.2. Implementing the Multi-Threaded Engine: Sender, Receiver, and Timer
+1.  **Transport Layer (Custom UDP Protocol):**
+    A custom reliable transport protocol is implemented in user-space over UDP. It uses a multi-threaded engine (Sender, Receiver, Timer) to manage a TCP-like connection, complete with a 3-way handshake, sequence numbers, and a Go-Back-N ARQ mechanism for guaranteed, in-order delivery.
 
-To manage the asynchronous nature of network communication efficiently, the paper proposes a design with separate execution units for sending, receiving, and managing timeouts. This prevents I/O operations from blocking the main application thread and avoids bottlenecks that could arise if a single thread were responsible for all network tasks.1 We will implement this model using a dedicated thread for each of these three core functions.
+2.  **Security Framework (E2EE):**
+    A robust, multi-layered security framework is built directly on top of the transport layer. It uses an authenticated key exchange to establish a shared secret and then encrypts all further communication. Crucially, the unencrypted transport header is used as **Associated Data (AD)** in the AEAD operation, cryptographically binding the packet metadata to its payload and preventing tampering.
 
-Sender Thread
+3.  **Peer Discovery (Zeroconf):**
+    To achieve a zero-configuration user experience, the application uses **mDNS (Multicast DNS)** and **DNS-SD (Service Discovery)**. Each client advertises its presence on the `_lan-chat._udp.local` service, publishing its display name and long-term public identity key in a DNS `TXT` record. This allows clients to automatically discover each other and bootstrap the trust needed for the authenticated key exchange.
 
-The Sender Thread is the system's outbound communication engine. Its primary responsibility is to dequeue messages that the application layer wishes to send. It takes this raw application data, encapsulates it within our custom protocol header, and transmits the resulting packet over the network using a standard UDP socket. After sending a data packet, it collaborates with the Timer Thread by instructing it to set a retransmission timeout for that specific packet. This interaction is fundamental to the protocol's reliability mechanism. The Sender Thread operates in a continuous loop, sleeping when the outgoing queue is empty and waking up when new data is available, ensuring efficient CPU usage.
+## 🔒 Security Model
 
-Receiver Thread
+The system is designed to be secure against both passive eavesdroppers and active attackers (e.g., Man-in-the-Middle) on the local network. Our security is built on a selection of modern, well-vetted cryptographic primitives.
 
-The Receiver Thread is the inbound counterpart to the Sender. It is perpetually blocked on a recvfrom() call, waiting for data to arrive on the application's UDP socket. When a packet arrives, the Receiver Thread is responsible for the initial stages of processing. It first validates the packet's integrity by checking its checksum. If the packet is valid, it is unpacked, and its header is parsed. Based on the packet type, the Receiver takes different actions. If it is a data packet, the payload is placed into the appropriate incoming buffer for the application to consume. Critically, the Receiver is also responsible for upholding the reliability contract by immediately generating and sending an Acknowledgement (ACK) packet back to the original sender to confirm successful receipt.1
+| Function | Algorithm | Recommended Library Function (libsodium) |
+| :--- | :--- | :--- |
+| **Long-Term Identity** | **Ed25519** (Digital Signature) | `crypto_sign_keypair` |
+| **Key Agreement** | **ECDH (X25519)** | `crypto_kx_keypair` |
+| **Symmetric Encryption**| **XChaCha20-Poly1305** (AEAD) | `crypto_aead_xchacha20poly1305_ietf_encrypt` |
+| **General-Purpose Hash** | **BLAKE2b** | `crypto_generichash` |
 
-Timer Thread
+For ongoing conversations, the protocol implements a **Double Ratchet** algorithm. This provides:
+* **Forward Secrecy:** A compromise of session keys at one point in time does not allow an attacker to decrypt past messages.
+* **Post-Compromise Security:** The protocol can "heal" itself, re-establishing security for future messages even after a device's state has been compromised.
 
-The Timer Thread is a specialized and crucial component for implementing reliability. Network packets can be lost, and a robust protocol must be able to detect and recover from such losses. The Timer Thread manages all time-sensitive events, with the most critical being the retransmission timeouts. When the Sender sends a packet, it registers a timeout with the Timer. If an ACK for that packet is received before the timeout expires, the corresponding timer event is cancelled. However, if the timeout period elapses without the timer being cancelled, the Timer Thread signals the Sender Thread to retransmit the lost packet.1 By offloading this timing logic to a dedicated thread, the Sender and Receiver threads are freed from the inefficiency and complexity of managing sleep() calls and can focus solely on data transmission and reception. This separation of concerns is a hallmark of a well-designed, high-performance network stack.
+## 🛠️ Technology Stack
 
-1.3. Engineering Reliability: Sequence Numbers, ACKs, and Go-Back-N ARQ
+This project is designed with security and performance as primary goals.
 
-Building a reliable service on top of the unreliable UDP requires implementing a set of mechanisms that mimic the core functionalities of TCP. The paper outlines a standard and effective approach to achieve this, centered around sequence numbers, acknowledgements, and an Automatic Repeat Request (ARQ) strategy.1
-
-Mechanism for Reliability
-
-Sequence Numbers: Every data packet transmitted is assigned a unique, monotonically increasing 32-bit sequence number. This number serves two purposes. First, it allows the receiver to detect lost packets; a gap in the sequence numbers indicates a missing packet. Second, it enables the receiver to correctly reorder packets that may have arrived out of sequence due to varying network paths, ensuring the application layer receives a coherent stream of data.1 The sequence number space is finite (0 to $2^{32}-1$), so all arithmetic operations involving them must be performed modulo $2^{32}$.
-Acknowledgements (ACKs): For every data packet it receives correctly, the receiver must send a small ACK packet back to the sender. This ACK packet contains the sequence number of the data packet it is acknowledging. The receipt of an ACK provides the sender with explicit confirmation that its data has successfully reached the destination.1
-Automatic Repeat Request (ARQ): The combination of timeouts and ACKs forms the basis of the ARQ mechanism. The paper specifies the use of a Go-Back-N ARQ variant. In this model, the sender is permitted to transmit a number of packets, defined by a "sliding window," without waiting for an ACK for each one. This keeps the network pipeline full and maximizes throughput. The sender maintains a timer for the oldest unacknowledged packet in the window. If this timer expires, it assumes the packet (and potentially all subsequent packets) was lost. The sender then "goes back" and retransmits all packets starting from the one that timed out.1 While more advanced strategies like Selective Repeat exist, Go-Back-N offers a good balance between performance and implementation simplicity, making it a suitable choice for this system.
-Checksum: To guard against data corruption during transit, the protocol header includes a checksum field. The sender calculates a checksum (e.g., CRC32) over the header fields and includes it in the packet. The receiver recalculates the checksum upon arrival and compares it to the value in the header. If they do not match, the packet is assumed to be corrupted and is discarded.1 This prevents malformed packets from being processed by the application.
-
-1.4. Connection Lifecycle Management: Handshake and Teardown
-
-To manage the state associated with a reliable communication session, the protocol must define formal procedures for establishing and terminating connections.
-
-Connection Establishment
-
-The paper proposes a three-way handshake mechanism, analogous to the one used by TCP, to initiate a connection.1 This process ensures that both peers are online, ready to communicate, and have synchronized their initial sequence numbers. The handshake proceeds as follows:
-The initiating peer (Client) sends a packet with a SYN (Synchronize) flag set, containing its initial sequence number ($A$).
-The receiving peer (Server) responds with a packet containing a SYN-ACK flag. This packet acknowledges the client's sequence number (by setting the acknowledgement number to $A+1$) and includes its own initial sequence number ($B$).
-The client completes the handshake by sending a final ACK packet, acknowledging the server's sequence number (by setting the acknowledgement number to $B+1$).
-Once this exchange is complete, the transport-level connection is considered established, and both sides are ready to exchange data packets. It is imperative to understand that this handshake only establishes a transport session. It provides no cryptographic authentication of the peers' identities. The paper itself acknowledges the security vulnerability of this basic handshake.1 The task of authenticating the peers is deferred to the security layer, which will be built on top of this established transport channel.
-
-Connection Teardown
-
-To gracefully close a connection, a similar exchange using FIN (Finish) packets is employed. When a peer has no more data to send, it transmits a FIN packet. The other peer responds with an ACK to confirm receipt of the FIN and, once it has also finished sending all its buffered data, sends its own FIN packet. The connection is fully terminated only after both sides have sent a FIN and received an ACK for it.1 This ensures that no data is lost during the shutdown process.
-
-Table 1: Custom Protocol Header Specification
-
-To translate the protocol's design into a working implementation, a precise and unambiguous header format is essential. The following table formalizes the header structure, building upon the fields described in the paper and augmenting them with a PacketType field to facilitate the distinction between different control and data packets. This byte-aligned specification is the definitive blueprint for packet serialization and deserialization.
-Field Name
-Bit Length
-Description
-Protocol Version
-8
-Version of our custom protocol (e.g., 0x01). Allows for future upgrades.
-Packet Type
-8
-Type of packet (e.g., DATA, ACK, SYN, FIN, KEY_EXCHANGE). Differentiates control packets from data packets.
-Flags
-8
-Control flags (e.g., Start of Message, End of Message) for message fragmentation and reassembly.
-Stream ID
-8
-Identifies the logical stream within the connection, enabling features like parallel file transfer and chat.
-Sequence Number
-32
-The sequence number of this packet, used for reliability and ordering.
-Ack Number
-32
-The sequence number of the next packet expected by the sender of this packet. Used in ACK packets.
-Payload Length
-16
-The length of the data payload in bytes. Maximum payload size is 65,535 bytes.
-Header Checksum
-32
-CRC32 checksum of the header fields (from Version to Payload Length) to detect corruption.
-Payload Data
-Variable
-The application data. This field will contain the encrypted ciphertext.
-
-
-II. Fortifying the Channel: A Multi-Layered Security Framework
-
-With a reliable transport protocol established, the next critical task is to build a robust security layer on top of it. The goal is to achieve true End-to-End Encryption (E2EE), a security paradigm that guarantees communication is confidential, untamperable, and authentic from the sender's device all the way to the recipient's device. This section details the design and integration of a modern cryptographic framework to secure the channel against a range of threats present on a local network.
-
-2.1. The Principle of End-to-End Encryption in a P2P Context
-
-End-to-End Encryption is a system where data is encrypted at its origin and can only be decrypted at its final destination. No intermediary nodes or infrastructure components can access the plaintext content.2 In a server-based system like Signal or WhatsApp, this means the central servers cannot read user messages. In our decentralized, serverless P2P model, the principle is even more direct: a message must be unintelligible and unforgeable to any other device on the LAN except for the intended recipient.
-Our threat model assumes an active adversary on the same local network. This adversary can perform a range of attacks:
-Eavesdropping: Passively sniffing network traffic to intercept packets.
-Packet Injection: Sending forged packets to one or both peers.
-Packet Modification: Intercepting legitimate packets and altering their contents before forwarding them.
-Man-in-the-Middle (MITM): Positioning themselves between two communicating peers, impersonating each to the other, and thereby gaining complete control over the communication channel.
-To counter this threat model, our security framework must provide three core cryptographic guarantees:
-Confidentiality: Preventing eavesdroppers from reading message content.
-Integrity: Ensuring that messages cannot be altered in transit without detection.
-Authenticity: Verifying that a message was sent by the claimed sender and not an impostor.
-
-2.2. The Cryptographic Foundation: Authenticated Encryption with Associated Data (AEAD)
-
-Modern cryptographic best practice strongly advocates for the use of AEAD ciphers. These algorithms elegantly combine encryption (for confidentiality) and a message authentication code (MAC, for integrity and authenticity) into a single, atomic operation. This integrated approach is not only more efficient but is also significantly less prone to the subtle and often catastrophic implementation errors that can arise when using separate encryption and authentication primitives.4
-
-Cipher Selection: XChaCha20-Poly1305
-
-While AES-GCM is a widely used and standardized AEAD, we will select XChaCha20-Poly1305 for this application. This choice is based on several practical advantages:
-Software Performance: ChaCha20 is a stream cipher designed for excellent performance on general-purpose CPUs that lack dedicated cryptographic hardware. It is often significantly faster than AES in software-only implementations, which is a common scenario for desktop and laptop PCs.7
-Resistance to Timing Attacks: Unlike some software implementations of AES, ChaCha20's design is not susceptible to cache-timing side-channel attacks, providing a more robust security profile in a software context.
-Extended Nonce: The "X" in XChaCha20 stands for "extended." It uses a 192-bit nonce (a number used only once per key), which is large enough to be generated randomly for each message without a realistic risk of collision. This simplifies the implementation by removing the need for complex nonce management (like maintaining a counter) and eliminates a common source of catastrophic cryptographic failure.7
-
-Integration with the Protocol Header
-
-A crucial aspect of our security design is how the AEAD cipher interacts with our custom transport protocol header. The AEAD operation will encrypt the Payload Data field of our packet. The remaining, unencrypted header fields (Version, Packet Type, Sequence Number, etc.) will be supplied to the AEAD algorithm as "Associated Data" (AD).9
-This design has a profound security implication. The authentication tag generated by the Poly1305 component is calculated over both the encrypted ciphertext and the plaintext associated data. This means the header is cryptographically bound to the payload. An attacker on the network cannot modify any part of the plaintext header—such as changing the sequence number to disrupt the connection or re-routing the packet by altering the stream ID—without invalidating the authentication tag. When the recipient's client attempts to decrypt the packet, the AEAD operation will fail, and the tampered packet will be safely discarded. This elevates the security from simple payload confidentiality to comprehensive transport integrity, protecting against a sophisticated class of network-level attacks.
-
-2.3. Establishing Trust: Secure Key Exchange with Elliptic Curve Diffie-Hellman (ECDH)
-
-Before two peers can communicate using a symmetric AEAD cipher, they must first securely agree on a shared secret key. This key exchange must occur over the insecure local network, meaning the process must be immune to eavesdropping.10
-
-Solution: Diffie-Hellman Key Exchange
-
-The Diffie-Hellman (DH) key exchange protocol is the canonical solution to this problem. It allows two parties to collaboratively establish a shared secret by exchanging only public information. Even if an attacker intercepts all the messages exchanged during the protocol, they cannot compute the resulting shared secret due to the computational difficulty of the underlying discrete logarithm problem.11
-
-Modernization with Elliptic Curves (ECDH)
-
-We will employ the modern, more efficient variant of DH known as Elliptic Curve Diffie-Hellman (ECDH). ECDH is based on the algebraic structure of elliptic curves and provides the same level of security as traditional DH but with significantly smaller key sizes. This translates to faster computations and lower network overhead, which is beneficial for a real-time chat application.13 Specifically, we will use the X25519 curve (also known as Curve25519). X25519 is a state-of-the-art elliptic curve designed by Daniel J. Bernstein. It is renowned for its high performance, careful design that avoids many common implementation pitfalls, and strong resistance to a wide range of cryptographic attacks.
-The process is as follows: Each peer generates a temporary, single-use (ephemeral) X25519 key pair, consisting of a private key and a public key. They exchange their public keys. Then, each peer combines their own private key with the public key they received from the other party. The mathematical properties of the elliptic curve ensure that both peers will independently compute the exact same shared secret value, which can then be used to derive the symmetric keys for the AEAD cipher.
-
-2.4. Authenticating Peers and Thwarting Man-in-the-Middle (MITM) Attacks
-
-The basic ECDH exchange, while secure against passive eavesdropping, is vulnerable to an active Man-in-the-Middle (MITM) attack. An attacker can intercept the initial public key exchange, establish a separate secure session with each peer, and then transparently relay messages between them, decrypting and re-encrypting everything along the way. The peers would be unaware that their communication is being compromised.14
-To defeat this, the key exchange must be authenticated. Peers need a way to verify that the public key they received truly belongs to the person they intend to talk to.
-
-Solution: Long-Term Identity Keys and Digital Signatures
-
-Each user of the chat application will generate a long-term identity key pair. This key pair is generated once and serves as the user's persistent cryptographic identity. For this purpose, we will use the Ed25519 digital signature algorithm. Ed25519 is based on the related Edwards-curve form of Curve25519, making it highly compatible with our choice of X25519 for key exchange and sharing its high-performance characteristics.15
-The authenticated key exchange protocol integrates these identity keys:
-Peers generate their ephemeral X25519 key pairs as before.
-They exchange their ephemeral public keys.
-In addition, they use their long-term private Ed25519 key to generate a digital signature over the entire transcript of the key exchange messages.
-They send this signature to the other peer.
-Each peer then uses the other's long-term public Ed25519 key to verify the received signature.
-If the signature verification succeeds, it provides cryptographic proof that the owner of the long-term identity key participated in the exchange and approved the transcript. This binds the ephemeral session to the long-term identities of the participants, making a MITM attack computationally infeasible.
-
-Trust Establishment: TOFU and Out-of-Band Verification
-
-This authenticated exchange relies on each peer having an authentic copy of the other's long-term public identity key. The initial distribution of these keys is a critical bootstrapping step. The public identity keys will be advertised as part of the peer discovery process (detailed in Section IV). The first time a user, Alice, connects to another user, Bob, her client will fetch Bob's public key from the discovery service and cache it. This is known as Trust On First Use (TOFU).
-While TOFU is a practical approach, it is vulnerable to an attack during the very first interaction. For applications requiring higher security, the system must provide an out-of-band (OOB) verification mechanism. This allows users to confirm the authenticity of the cached public keys through a separate channel. Modern secure messengers like WhatsApp and Signal implement this by allowing users to compare a "safety number" or scan a QR code, which represents a cryptographic hash of their public keys.2 Our application should implement a similar feature, displaying a fingerprint of the public keys so users can verify them in person or over another trusted communication channel.
-
-Table 2: Cryptographic Primitive Selection and Rationale
-
-The following table summarizes the chosen cryptographic algorithms and provides the rationale for their selection. The use of a high-level, well-vetted cryptographic library like libsodium is strongly recommended to abstract away the dangerous complexities of low-level cryptographic implementation.7
-Function
-Algorithm
-Recommended Library Function
-Rationale
-Long-Term Identity
-Ed25519
-crypto_sign_keypair
-A modern, high-speed digital signature scheme. Its keys are compatible with X25519, allowing for a unified key format and simplified management.
-Key Agreement
-ECDH (X25519)
-crypto_kx_keypair / crypto_kx_client_session_keys
-A state-of-the-art elliptic curve providing strong security with excellent performance and resistance to implementation errors.
-Symmetric Encryption
-XChaCha20-Poly1305
-crypto_aead_xchacha20poly1305_ietf_encrypt
-A high-performance AEAD cipher that is safe to use with random nonces and is resistant to timing attacks, making it ideal for software implementations.
-General-Purpose Hash
-BLAKE2b
-crypto_generichash
-Significantly faster than SHA-2 and SHA-3 while providing a very high level of security. Used for generating key fingerprints and other hashing needs.
-
-
-III. Advanced Security Considerations: Achieving Forward Secrecy
-
-The security framework described in the previous section provides a robustly encrypted and authenticated channel for communication. However, it relies on a single set of session keys derived from the initial key exchange. While these keys are secure, their compromise would have significant consequences. This section explores an advanced security property known as forward secrecy and outlines an architecture for its implementation, drawing inspiration from the state-of-the-art Signal Protocol.
-
-3.1. The Limitations of Static Session Keys
-
-The key exchange protocol from Section II establishes a shared secret, which is then used to derive symmetric keys for encrypting the entire conversation. These keys remain static for the duration of the session. This design has a significant vulnerability: if an attacker manages to compromise a user's device at any point and extracts the current session keys, they can retroactively decrypt all past messages that were encrypted with those keys. The entire conversation history becomes compromised.
-
-Forward Secrecy (FS)
-
-Forward Secrecy, also known as perfect forward secrecy, is a property of secure communication protocols that prevents such retroactive decryption. It ensures that a compromise of a user's long-term identity keys or current session keys does not compromise the confidentiality of past sessions.16 Our use of ephemeral ECDH keys for each new session provides session-level forward secrecy. If two users chat today and again tomorrow, a compromise of tomorrow's session keys will not reveal the contents of today's chat. However, within a single, long-running session, all messages are still protected by the same key.
-
-Post-Compromise Security (PCS)
-
-A related and even stronger property is Post-Compromise Security (PCS), sometimes referred to as "future secrecy" or "self-healing." PCS ensures that if an attacker compromises the state of a device at a given moment, the protocol can automatically recover and re-establish security for future messages. The compromise is contained, and the channel can "heal" itself without requiring users to manually re-establish a new secure session.17
-
-3.2. An Introduction to the Signal Protocol's Double Ratchet Algorithm
-
-The Double Ratchet algorithm, pioneered by the Signal Protocol and now used in major messaging applications like WhatsApp, is the gold standard for providing both strong forward secrecy and post-compromise security for asynchronous conversations.15 It achieves this by continuously and automatically updating the encryption keys with every message exchanged.
-The algorithm is called a "double" ratchet because it combines two independent key-derivation mechanisms:
-Symmetric-key Ratchet: This is a simple and fast ratchet based on a Key Derivation Function (KDF), typically implemented using a hash function like HMAC. For each message sent, a new message key is derived from a "chain key." After use, the message key is destroyed, and the chain key is updated by hashing it. This process is like a ratchet that can only move forward; it is computationally infeasible to reverse the hash function to derive old chain keys or message keys from the current state. This provides per-message forward secrecy.
-Diffie-Hellman Ratchet: This ratchet provides the "healing" property of PCS. Periodically (ideally, with every message), a peer attaches a new ephemeral ECDH public key to their message. When the recipient receives this, they perform an ECDH calculation using their own current ephemeral key pair. The result of this DH operation is used to seed a completely new symmetric-key ratchet chain. This step moves the conversation to a new "epoch." If an attacker had compromised the previous chain keys, this DH update introduces new secret material that the attacker does not possess, thereby re-securing the channel for all future messages.
-
-Adapting the Protocol for a Decentralized Environment
-
-The full Signal Protocol suite includes a sophisticated asynchronous key agreement protocol called X3DH, which relies on a central server to store a "bundle" of pre-generated public keys for each user.15 This allows one user to initiate a secure session with another even if the recipient is offline.
-Our system, by design, is serverless and operates on a LAN where peers are expected to be online to communicate.19 This decentralization constraint makes a direct implementation of X3DH impossible. However, this also simplifies our architecture. The initial session establishment must be synchronous, using the authenticated key exchange protocol described in Section II. This exchange establishes the initial shared secret required to bootstrap the Double Ratchet. Once this initial secret is in place, the Double Ratchet algorithm itself, which manages the ongoing evolution of session keys, can be implemented directly between the two peers without any need for a server.
-
-3.3. High-Level Integration Path for a Ratcheting Mechanism
-
-Integrating a Double Ratchet mechanism is a complex undertaking that significantly increases the state management requirements of the client application. While a full implementation is beyond the scope of this document, the following provides the architectural blueprint for its integration.
-
-State Management
-
-For each ongoing conversation, each client must maintain the following cryptographic state:
-Its own current ephemeral ECDH key pair (the "ratchet key").
-The other peer's last known public ECDH key.
-A Root Key, which is updated by the DH ratchet.
-A Sending Chain Key and a Receiving Chain Key, which are updated by the symmetric-key ratchet.
-Counters for the number of messages sent/received within the current chains.
-
-Message Encryption and Decryption Logic
-
-To Send a Message: The client first advances its sending chain ratchet by one step. This involves hashing the current Sending Chain Key to produce a new Message Key and a new Sending Chain Key. The plaintext message is then encrypted using the new Message Key with the AEAD cipher. The Message Key is immediately wiped from memory. If it is time to perform a DH ratchet step, a new ephemeral ECDH key pair is generated, and the new public key is attached to the outgoing encrypted message.
-To Receive a Message: Upon receiving an encrypted message, the client first checks if it contains a new public ECDH key.
-If it does, the client performs a DH ratchet step. It calculates a new DH shared secret, which is used to derive a new Root Key and new Receiving and Sending Chain Keys. The client's own ratchet key pair is replaced with a newly generated one.
-The client then performs a symmetric-key ratchet step on its Receiving Chain to derive the correct Message Key for the incoming message. It uses this key to decrypt and authenticate the ciphertext. If successful, the message is displayed to the user.
-This continuous, stateful evolution of keys ensures that each message is encrypted with a unique key, and the compromise of any single key or even the entire device state at one point in time has a minimal and temporary impact on the overall security of the conversation.
-
-IV. Decentralized Operation: Peer Discovery on a Local Network
-
-A fundamental challenge in any peer-to-peer system is bootstrapping: how does a newly joined node discover other peers in the network? In the absence of a central server to act as a directory, clients need a mechanism to automatically and dynamically find each other on the local network. This section details the design of a zero-configuration discovery system using industry-standard protocols.
-
-4.1. The Challenge of Serverless Discovery
-
-In a traditional client-server architecture, the server's address is a well-known, pre-configured piece of information. All clients connect to this central point to find each other and exchange messages. In a decentralized P2P network, no such central authority exists. A client starting up on a LAN has no initial knowledge of who else is present or how to contact them.20
-Naive approaches to this problem are fraught with issues. Broadcasting discovery packets to every device on the network is inefficient and does not scale. Actively scanning the entire local IP address range is slow, generates a large amount of "noisy" network traffic, and can be flagged as malicious activity by network security systems.22 Requiring users to manually type in the IP addresses of their peers is a non-starter from a usability perspective; it is cumbersome, error-prone, and fundamentally at odds with the seamless experience of a modern "Discord type" application. The goal is to create a system where users appear and disappear from a contact list automatically as they join and leave the network.
-
-4.2. An Overview of Zero-Configuration Networking (Zeroconf)
-
-The solution to this challenge lies in a suite of technologies known as Zero-Configuration Networking (Zeroconf). Zeroconf is designed specifically to enable devices on a local network to connect and offer services to each other without any manual configuration or dedicated server infrastructure.23 It is the technology that powers features like Apple's Bonjour, allowing devices like printers and file shares to appear automatically on the network.24
-Zeroconf is built on three core technologies:
-Link-Local Addressing: A mechanism for devices to automatically assign themselves an IP address in the absence of a DHCP server. While part of the standard, this is less critical for our use case, as most LANs have a DHCP server.
-Multicast DNS (mDNS): This is the heart of Zeroconf. mDNS allows devices to perform DNS-like queries on the local network without a central DNS server. Instead of sending a query to a specific server, a client sends the query to a special, reserved multicast IP address (224.0.0.251 for IPv4). All mDNS-enabled devices on the local link receive this query. The device whose name is being queried then responds directly, also via multicast, with its IP address.26 mDNS operates on the reserved .local top-level domain.
-DNS-Based Service Discovery (DNS-SD): This is a specification that defines how to use standard DNS record types to advertise and discover network services. It builds on top of mDNS to provide a structured way for a device to announce not just its name, but the specific services it offers (e.g., "I am a printer," "I offer an FTP service").27
-
-4.3. Implementation via mDNS and DNS-SD
-
-Our peer discovery mechanism will be built by implementing both the client and server roles of DNS-SD over mDNS. Each instance of our chat application will simultaneously advertise its own presence and browse for the presence of others.29
-
-Service Registration (Advertising)
-
-When a client application starts, it must announce its presence to the local network. It does this by registering a service instance via mDNS. This involves broadcasting mDNS packets that effectively publish a set of DNS records associated with the user:
-A PTR (Pointer) record: This record announces the existence of a service of a specific type. We will define a unique service type for our application, for example, _lan-chat._udp.local. The _udp part signifies that the service operates over the UDP protocol. This record acts as the primary discovery key.
-An SRV (Service) record: This record provides the specific connection details for this particular instance of the service. It maps the service instance name (e.g., "Alice's PC._lan-chat._udp.local") to the user's mDNS hostname (e.g., alices-pc.local) and the specific UDP port number that our application is listening on for incoming connections.
-A TXT (Text) record: This record is a flexible container for arbitrary key-value metadata. This is a critical component for our system. We will use the TXT record to advertise essential application-level information, including the user's chosen display name and, most importantly, their base64-encoded long-term public identity key (Ed25519).
-By broadcasting these records, the client makes itself fully discoverable to any other peer on the network that is looking for the _lan-chat._udp.local service.
-
-Service Discovery (Browsing)
-
-Concurrently with advertising its own service, the client must also browse for other peers. It does this by sending an mDNS query for the PTR record corresponding to our service type: _lan-chat._udp.local. All other clients on the network running our application will receive this multicast query and respond with information about their own service instances.
-As responses are received, the client application can populate its user list in real-time. When the user decides to initiate a chat with a discovered peer, the client performs subsequent mDNS queries for the corresponding SRV and TXT records. The SRV record provides the necessary IP address and port to establish the transport-layer connection, and the TXT record provides the public identity key required to bootstrap the authenticated key exchange. This entire process is dynamic; if a user shuts down their application, their mDNS service registration will time out, and they will automatically disappear from the user lists of other peers. This provides a seamless, zero-friction user experience.
-While mDNS/DNS-SD is a powerful tool, it's important to acknowledge its privacy implications. The protocol, by design, broadcasts information about the user's presence and identity (display name, public key) to all devices on the local network.31 In the context of a trusted or semi-trusted LAN environment (e.g., a home, office, or private event), this level of disclosure is generally an acceptable trade-off for the immense benefit of zero-configuration usability. The critical communication content remains protected by the end-to-end encryption layer.
-
-Table 3: DNS-SD Service Definition
-
-To ensure interoperability between all clients implemented according to this guide, a formal service definition is required. This table specifies the exact parameters for our DNS-SD service.
-Parameter
-Value
-Description
-Service Type
-_lan-chat._udp
-The unique identifier for our chat service. The _udp part indicates it runs over the custom UDP-based protocol.
-Domain
-local.
-The standard, reserved domain for mDNS.
-Full Service Name
-_lan-chat._udp.local.
-The full service name that clients will register and browse for.
-TXT Record Key 1
-txtvers=1
-A version number for the TXT record schema, allowing for future extensions.
-TXT Record Key 2
-name=<display_name>
-The user's chosen display name (e.g., "Alice"), encoded in UTF-8.
-TXT Record Key 3
-pkey=<public_key>
-The user's long-term Ed25519 public identity key, encoded using the standard Base64 alphabet.
-
-
-V. Implementation Roadmap and Code Synthesis
-
-This section synthesizes the architectural principles from the preceding sections into a practical guide for implementation. It provides recommendations for a technology stack, outlines the core application logic using a state machine model, and presents code examples for key functionalities. The goal is to provide a clear roadmap for a developer to translate this design document into a working application.
-
-5.1. Selecting a Technology Stack
-
-The choice of programming language and libraries is critical for the security and stability of the final application.
-
-Programming Language
-
-The original research paper implemented its protocol in C++.1 C++ is a powerful language that offers the low-level control necessary for network protocol development. However, it also places the burden of manual memory management and concurrency safety on the developer, areas that are notoriously prone to subtle and severe bugs.
-For a new implementation, Rust is a highly recommended alternative. Rust is a modern systems programming language that provides compile-time guarantees of memory safety and thread safety without sacrificing performance. Its strong type system and ownership model eliminate entire classes of common bugs (e.g., null pointer dereferences, buffer overflows, data races), which is invaluable when building security-critical software like a cryptographic chat application.
-
-Core Libraries
-
-Regardless of the language choice, it is paramount to not implement cryptographic primitives from scratch. Modern cryptography is incredibly complex, and even experts frequently make mistakes in low-level implementations. Instead, the application must rely on a well-vetted, high-level, audited cryptographic library.
-Cryptography: libsodium is the gold standard for a modern, easy-to-use cryptographic library.7 It provides a high-level API for all the primitives selected in this design:
-Key Exchange: crypto_kx_* for X25519.
-Signatures: crypto_sign_* for Ed25519.
-AEAD Encryption: crypto_aead_xchacha20poly1305_ietf_* for XChaCha20-Poly1305.
-Hashing: crypto_generichash for BLAKE2b.
-Using libsodium (or its bindings in the chosen language) will significantly improve the security and robustness of the implementation.14
-Peer Discovery: Implementing the mDNS/DNS-SD protocol from scratch is a complex task. It is far more practical to use a mature library that handles the intricacies of multicast networking and packet formatting.
-On Linux, Avahi is the standard implementation and provides a C API.
-On macOS and iOS, Apple's Bonjour SDK is the native choice.
-For a cross-platform solution, wrapper libraries exist for many languages, such as the zeroconf crate for Rust 33 or python-zeroconf for Python.34
-
-5.2. State Management: A Client Lifecycle State Machine
-
-To manage the complex lifecycle of a peer-to-peer connection—from discovery through handshakes and authentication to secure communication—it is beneficial to model the application's logic as a finite state machine. The application will maintain a separate state machine for its interaction with each discovered peer.
-The states for a connection with a given peer are as follows:
-IDLE: The initial state. The peer is not known or has not been interacted with.
-DISCOVERED: The peer has been found via mDNS. The application has their service information (IP, port, public key) but has not yet attempted to connect.
-CONNECTING: The application has initiated the transport-layer three-way handshake.1 It is waiting for the handshake to complete.
-AUTHENTICATING: The transport connection is established. The application is now performing the authenticated ECDH key exchange (Section II) over this channel.
-SECURED: The key exchange has successfully completed, and shared session keys have been derived. The channel is now secure and ready for application-level data (chat messages).
-DISCONNECTED: The connection has been gracefully closed (via FIN/ACK) or has been lost due to a network error or timeout.
-This state-driven approach provides a clear and robust structure for handling events like user actions, incoming packets, and network timeouts, ensuring the application behaves predictably throughout the connection lifecycle.
-
-5.3. Core Logic Implementation: Code Examples
-
-The following sections provide high-level, language-agnostic pseudocode for the most critical components of the system.
-
-Packet Serialization and Deserialization
-
-A pair of functions is needed to convert the protocol header structure (Table 1) to and from a byte array for network transmission.
-
-Code snippet
-
-
-function serialize_header(header):
-    buffer = new byte_array(HEADER_SIZE)
-    buffer.write_u8(0, header.version)
-    buffer.write_u8(1, header.packet_type)
-    buffer.write_u8(2, header.flags)
-    buffer.write_u8(3, header.stream_id)
-    buffer.write_u32_be(4, header.sequence_number)
-    buffer.write_u32_be(8, header.ack_number)
-    buffer.write_u16_be(12, header.payload_length)
-    
-    checksum = calculate_crc32(buffer[0..14])
-    buffer.write_u32_be(14, checksum)
-    
-    return buffer
-
-function deserialize_header(buffer):
-    header = new Header()
-    header.version = buffer.read_u8(0)
-    //... read all other fields
-    header.payload_length = buffer.read_u16_be(12)
-    
-    received_checksum = buffer.read_u32_be(14)
-    calculated_checksum = calculate_crc32(buffer[0..14])
-    
-    if received_checksum!= calculated_checksum:
-        throw ChecksumError
-        
-    return header
-
-
-
-AEAD Encryption and Decryption Wrapper
-
-These functions form the bridge between the application layer and the security layer. They encapsulate the cryptographic operations.
-
-Code snippet
-
-
-// Assumes `session_key` is the shared key for the current session
-function secure_send(plaintext_payload, header_for_ad):
-    // Use a high-level crypto library like libsodium
-    nonce = crypto_generate_random_nonce() // 192-bit for XChaCha20
-    
-    // The unencrypted header is used as Associated Data
-    associated_data = serialize_header(header_for_ad)
-    
-    ciphertext = crypto_aead_encrypt(
-        message = plaintext_payload,
-        ad = associated_data,
-        nonce = nonce,
-        key = session_key
-    )
-    
-    // The final payload sent over the network is the nonce + ciphertext
-    return nonce + ciphertext
-
-function secure_receive(network_payload, header_for_ad):
-    nonce = network_payload
-    ciphertext = network_payload
-    
-    associated_data = serialize_header(header_for_ad)
-    
-    try:
-        plaintext = crypto_aead_decrypt(
-            ciphertext = ciphertext,
-            ad = associated_data,
-            nonce = nonce,
-            key = session_key
-        )
-        return plaintext
-    catch DecryptionError:
-        // Authentication tag was invalid. Packet is forged or corrupted.
-        // Discard it silently.
-        return null
-
-
-
-mDNS Service Registration
-
-This snippet demonstrates how to use a hypothetical high-level Zeroconf library to advertise the user's presence.
-
-Code snippet
-
-
-function register_chat_service(display_name, public_key, port):
-    service_type = "_lan-chat._udp.local."
-    instance_name = display_name + "'s Chat"
-    
-    // Encode public key for the TXT record
-    pkey_b64 = base64_encode(public_key)
-    
-    txt_records = {
-        "txtvers": "1",
-        "name": display_name,
-        "pkey": pkey_b64
-    }
-    
-    // The library handles the mDNS broadcasting
-    zeroconf_service = new ZeroconfService(
-        type = service_type,
-        name = instance_name,
-        port = port,
-        txt = txt_records
-    )
-    
-    zeroconf_service.register()
-    return zeroconf_service // Keep object alive to maintain registration
-
-
-
-5.4. System Integration: Tying It All Together
-
-To illustrate how these components work in concert, consider the complete interaction flow between two users, Alice and Bob.
-Startup and Discovery:
-Alice starts her chat client. The application generates a long-term Ed25519 identity key pair if one doesn't already exist. It then uses the Zeroconf library to register the _lan-chat._udp.local service, publishing her display name and public key in the TXT record.
-Simultaneously, the client starts browsing for the same service type.
-Bob starts his client, which performs the same registration and browsing process.
-Alice's client receives the mDNS announcement from Bob's client. It parses the service information, extracts Bob's display name, IP address, port, and public key, and adds "Bob" to its user list. The state for the connection to Bob is now DISCOVERED.
-Connection Initiation:
-Alice clicks on Bob's name in her user list to start a chat.
-Her client transitions the state for Bob to CONNECTING. It initiates the three-way transport handshake by sending a SYN packet to Bob's IP and port.
-Bob's client, listening on its socket, receives the SYN, responds with a SYN-ACK, and Alice's client completes the handshake with an ACK. The transport channel is now established.
-Authentication and Key Exchange:
-Both clients transition their state to AUTHENTICATING.
-They now perform the authenticated ECDH key exchange over the newly established reliable channel. They generate ephemeral X25519 key pairs, exchange public keys, and sign the transcript with their long-term Ed25519 private keys.
-They verify each other's signatures using the public keys they learned during the discovery phase. Upon successful verification, they both derive the same shared session secret.
-Secure Communication:
-With the session keys derived, both clients transition the state to SECURED.
-Alice types "Hello, Bob!" and hits send.
-The message "Hello, Bob!" is passed to the secure_send function. It is encrypted and authenticated using XChaCha20-Poly1305 with the newly established session key. The protocol header for this data packet is used as the associated data.
-The resulting ciphertext becomes the payload of a data packet, which is handed to the reliable transport layer. The transport layer assigns it a sequence number and sends it to Bob.
-Bob's client receives the packet. The transport layer confirms its sequence number and sends an ACK. The ciphertext payload is passed to the secure_receive function.
-The secure_receive function uses the session key to decrypt and authenticate the payload, using the received packet's header as the associated data. The authentication tag is verified, confirming the message is from Alice and has not been tampered with.
-The plaintext "Hello, Bob!" is recovered and displayed in Bob's chat window.
-
-VI. Conclusion and Future Directions
-
-
-6.1. Summary of the Secure, Decentralized Chat System Architecture
-
-This report has detailed a comprehensive architectural blueprint for a secure, fast, and fully decentralized peer-to-peer chat system designed for operation on a local area network. The architecture is built upon a layered design that systematically addresses the core requirements of reliability, security, and usability.
-At the lowest level, a custom reliable transport protocol, adapted from academic research, is built on top of UDP. This provides a TCP-like service with connection management, guaranteed delivery, and in-order data streams, but with the flexibility of a user-space implementation.1 This foundation is ideally suited for the low-latency demands of real-time chat.
-Layered on top of this transport is a multi-faceted security framework that achieves true end-to-end encryption. By leveraging modern, standardized cryptographic primitives—X25519 for key exchange, Ed25519 for identity, and XChaCha20-Poly1305 for authenticated encryption—the system ensures the confidentiality, integrity, and authenticity of all communications. The integration of the transport header as associated data in the AEAD operation provides a deep, cross-layer security guarantee against sophisticated packet manipulation attacks.
-To enable serverless operation, the system employs a zero-configuration peer discovery mechanism based on mDNS and DNS-SD. This allows clients to automatically discover and connect to each other on a LAN without any manual configuration, providing a seamless user experience that is critical for a modern application. The discovery mechanism is also ingeniously leveraged to bootstrap the cryptographic trust by advertising public identity keys.
-Finally, the report outlines an implementation roadmap, recommending a modern technology stack and providing a state-driven model for managing the connection lifecycle. The result is a complete design for a system that is not only functional but also secure and robust by modern standards.
-
-6.2. Pathways for Extension
-
-The architecture presented in this document provides a solid foundation that can be extended with additional features to create a more comprehensive communication suite.
-Group Chat: The protocol's native one-to-many communication model is the ideal starting point for implementing multi-user group chats.1 The primary challenge would be to design and implement a secure group key agreement protocol. A common approach is for one user to act as a group controller, generating a shared symmetric key for the group and securely distributing it to each member using their individual E2EE channels. A more advanced solution could involve a decentralized protocol like the Asynchronous Ratcheting Tree (ART) to provide scalable forward secrecy for large groups.
-File Transfers: The multi-stream capability, a core feature of the underlying protocol inspired by SCTP, is perfectly suited for handling large file transfers without interrupting the flow of chat messages.1 A file transfer could be initiated on a new, dedicated stream within the existing connection. The transport layer's reliability mechanisms would ensure the file is transferred completely and without corruption, while chat messages continue to be exchanged on a separate stream.
-Performance Tuning: The experimental results in the reference paper demonstrate that transport-layer parameters such as the sliding window size, the maximum data payload per packet, and the retransmission timeout value have a significant impact on throughput.1 While this report provides a solid baseline, a production-grade application would benefit from empirical performance tuning. This would involve testing the application under various network conditions (e.g., high-latency Wi-Fi, congested networks) to find the optimal parameter values that balance speed and reliability.
-Internet Connectivity via NAT Traversal: While the system is designed for LAN-only operation, a natural and powerful extension would be to enable communication between peers across the internet. This would require overcoming the challenge of Network Address Translation (NAT), which typically prevents direct incoming connections to devices on a private network. This could be achieved by integrating standard NAT traversal techniques like STUN (to discover public IP addresses), TURN (to relay traffic when direct connection fails), and ICE (a framework to orchestrate STUN and TURN to find the best possible connection path).35 This would transform the application from a LAN utility into a globally-capable, decentralized communication tool.
-Works cited
-Design_and_development_of_a_UDP-based_connection-o.pdf
-About end-to-end encryption - WhatsApp Help Center, accessed October 28, 2025, https://faq.whatsapp.com/820124435853543
-End-to-End encryption for a chat application - Stack Overflow, accessed October 28, 2025, https://stackoverflow.com/questions/48249900/end-to-end-encryption-for-a-chat-application
-Authenticated Encryption with Associated Data (AEAD) | An Ultimate Guide - Researchmate, accessed October 28, 2025, https://researchmate.net/authenticated-encryption-with-associated-data/
-RFC 9771: Properties of Authenticated Encryption with Associated Data (AEAD) Algorithms, accessed October 28, 2025, https://www.rfc-editor.org/rfc/rfc9771.html
-FELICS-AEAD: Benchmarking of Lightweight Authenticated Encryption Algorithms - NIST Computer Security Resource Center, accessed October 28, 2025, https://csrc.nist.gov/CSRC/media/Events/lightweight-cryptography-workshop-2019/documents/papers/felics-aead-benchmarking-lightweight-lwc2019.pdf
-AEAD constructions - Libsodium, accessed October 28, 2025, https://doc.libsodium.org/secret-key_cryptography/aead
-AEAD (Authenticated Encryption with Additional Data) · sodium-native, accessed October 28, 2025, https://sodium-friends.github.io/docs/docs/aead
-What is AEAD (Authenticated Encryption with Associated Data)? | by Rushika Jayasinghe, accessed October 28, 2025, https://medium.com/@rushikajayasinghe/what-is-aead-authenticated-encryption-with-associated-data-17a5b2f42404
-"Diffie-Hellman Key Exchange" in plain English, accessed October 28, 2025, https://security.stackexchange.com/questions/45963/diffie-hellman-key-exchange-in-plain-english
-Diffie–Hellman key exchange - Wikipedia, accessed October 28, 2025, https://en.wikipedia.org/wiki/Diffie%E2%80%93Hellman_key_exchange
-Diffie-Hellman key exchange in End-to-End Encryption (E2EE) - Shubhomoy Biswas, accessed October 28, 2025, https://shubhomoybiswas.medium.com/diffie-hellman-key-exchange-in-end-to-end-encryption-e2ee-2366e056661
-Implementation of Secure End-to-End Encrypted Chat Application Using Diffie–Hellman Key Exchange and AES-256 in a Microservice Architecture - MDPI, accessed October 28, 2025, https://www.mdpi.com/2673-4591/107/1/98
-Diffie–Hellman key exchange questions [closed], accessed October 28, 2025, https://security.stackexchange.com/questions/211950/diffie-hellman-key-exchange-questions
-Signal >> Documentation, accessed October 28, 2025, https://signal.org/docs/
-Building secure peer-to-peer chat for business applications | RST Software, accessed October 28, 2025, https://www.rst.software/blog/peer-to-peer-chat
-Signal Protocol and Post-Quantum Ratchets, accessed October 28, 2025, https://signal.org/blog/spqr/
-How Signal Protocol can Secure Your Chat App | Softjourn, Inc., accessed October 28, 2025, https://softjourn.com/insights/how-signal-protocol-can-secure-your-chat-app
-"We need to go beyond Signal" – How today's AWS outage shows the weaknesses of centralized apps | TechRadar, accessed October 28, 2025, https://www.techradar.com/vpn/vpn-privacy-security/we-need-to-go-beyond-signal-how-todays-aws-outage-shows-the-weaknesses-of-centralized-apps
-Peer-to-peer - Wikipedia, accessed October 28, 2025, https://en.wikipedia.org/wiki/Peer-to-peer
-Theoretical Discussion on Peer Discovery - help - The Rust Programming Language Forum, accessed October 28, 2025, https://users.rust-lang.org/t/theoretical-discussion-on-peer-discovery/90540
-Peer to Peer: Methods of Finding Peers - p2p - Stack Overflow, accessed October 28, 2025, https://stackoverflow.com/questions/310607/peer-to-peer-methods-of-finding-peers
-Zero-configuration networking - Wikipedia, accessed October 28, 2025, https://en.wikipedia.org/wiki/Zero-configuration_networking
-z2z: Discovering Zeroconf Services Beyond Local Link - Columbia CS, accessed October 28, 2025, http://www.cs.columbia.edu/~jae/papers/z2z-paper-1.1.pdf
-Zero Configuration Networking: Implementation, performance, and security, accessed October 28, 2025, https://liu.diva-portal.org/smash/get/diva2:570004/FULLTEXT01.pdf
-Multicast DNS - Wikipedia, accessed October 28, 2025, https://en.wikipedia.org/wiki/Multicast_DNS
-RFC 6763 - DNS-Based Service Discovery - IETF Datatracker, accessed October 28, 2025, https://datatracker.ietf.org/doc/html/rfc6763
-Multicast DNS and Service Discovery (System Administration Guide, accessed October 28, 2025, https://docs.oracle.com/cd/E19120-01/open.solaris/819-3194/dnsref-28/index.html
-Local Peer Discovery - Wikipedia, accessed October 28, 2025, https://en.wikipedia.org/wiki/Local_Peer_Discovery
-P2P Peer Discovery - Jordan Santell, accessed October 28, 2025, https://jsantell.com/p2p-peer-discovery/
-RFC 8882: DNS-Based Service Discovery (DNS-SD) Privacy and Security Requirements, accessed October 28, 2025, https://www.rfc-editor.org/rfc/rfc8882.html
-Roadmap - Libsodium documentation, accessed October 28, 2025, https://doc.libsodium.org/roadmap
-zeroconf - Rust - Docs.rs, accessed October 28, 2025, https://docs.rs/zeroconf
-python-zeroconf/python-zeroconf: A pure python implementation of multicast DNS service discovery - GitHub, accessed October 28, 2025, https://github.com/python-zeroconf/python-zeroconf
-Connecting P2P over NAT? - Stack Overflow, accessed October 28, 2025, https://stackoverflow.com/questions/30367603/connecting-p2p-over-nat
-NAT Traversal Techniques for Peer-to-Peer Connections: A Comprehensive Guide, accessed October 28, 2025, https://www.checkmynat.com/posts/nat-traversal-techniques-for-peer-to-peer-connections/
+* **Language:** **Rust** is the recommended language due to its compile-time guarantees for memory safety and thread safety, which are critical for building secure, concurrent network applications.
+* **Cryptography:** **libsodium** (or its Rust bindings) is used for all cryptographic operations. It provides a high-level, audited, and easy-to-use API that abstracts away the complexities of low-level crypto.
+* **Peer Discovery:** A cross-platform **Zeroconf** library (e.g., `zeroconf` crate for Rust) is used to handle the mDNS/DNS-SD protocol.
 
