@@ -17,37 +17,48 @@ class ChatApplication:
         self.display_name = display_name
         self.crypto = CryptoLayer()
         
-        # --- FIX FOR ATTRIBUTE ERROR ---
-        # Your transport.py expects the crypto object to hold the display_name.
-        # We manually attach it here to satisfy that requirement.
+        # --- FIX 1: Attribute Error ---
+        # The Transport layer looks for 'display_name' inside the crypto object 
+        # during the handshake. We attach it here manually to satisfy that requirement.
         self.crypto.display_name = self.display_name 
-        # -------------------------------
 
+        # Initialize Peer Discovery (but don't start it yet, we need the port first)
         self.peer_discovery = PeerDiscovery(
             service_type=SERVICE_TYPE,
             display_name=self.display_name,
             public_key=self.crypto.get_public_key_b64()
         )
+        
+        # Initialize Transport Layer
         self.transport = ReliableTransport(
             crypto_layer=self.crypto,
             message_callback=self.handle_incoming_message
         )
+        
         self.ui_queue = queue.Queue()
         self.peers = {} # Discovered peers: {name: (ip, port, pkey)}
 
     def start(self):
-        """Starts all services: discovery, transport, and UI."""
+        """Starts all services in the correct order to prevent port mismatch."""
         print("Starting P2P Chat Application...")
         print(f"Your Identity: {self.display_name}")
         print(f"Your Public Key (Fingerprint): {self.crypto.get_public_key_b64()[:16]}...")
 
-        # Start peer discovery
-        self.peer_discovery.start(self.handle_peer_update)
-        
-        # Start the transport layer to listen for incoming connections
+        # --- FIX 2: Port Mismatch / Timeout Error ---
+        # 1. Start the Transport layer FIRST. 
+        #    This asks the OS for an available port (binding to port 0).
         self.transport.start_listening()
+        
+        # 2. Get the ACTUAL port the OS assigned to us.
+        real_port = self.transport.listening_port
+        print(f"[System] Transport listening on port {real_port}")
 
-        # Start the command-line interface thread
+        # 3. Start Peer Discovery, passing the REAL port.
+        #    This ensures we advertise the correct port to the network via mDNS.
+        #    (Note: Requires the updated peer_discovery.py that accepts a port arg)
+        self.peer_discovery.start(self.handle_peer_update, real_port)
+        
+        # 4. Start the command-line interface thread
         ui_thread = threading.Thread(target=self.run_cli, daemon=True)
         ui_thread.start()
 
@@ -73,7 +84,7 @@ class ChatApplication:
     def run_cli(self):
         """The main loop for the command-line user interface."""
         while True:
-            # Check for updates from other threads (e.g., new messages, peer list changes)
+            # Check for updates from other threads (async messages)
             try:
                 event_type, data = self.ui_queue.get_nowait()
                 if event_type == "peer_update":
@@ -85,8 +96,10 @@ class ChatApplication:
             except queue.Empty:
                 pass
 
-            # Non-blocking input check (conceptual)
+            # User Input Handling
             try:
+                # Note: In a production app, we would use a non-blocking input method.
+                # Here we use blocking input for simplicity.
                 command = input("> ").strip()
                 self.process_command(command)
             except (KeyboardInterrupt, EOFError):
@@ -97,11 +110,12 @@ class ChatApplication:
         """Processes user input from the CLI."""
         parts = command.split(" ", 2)
         
-        # Handle empty input
+        # --- FIX 3: CLI Crash on Empty Input ---
+        # Handle empty input (e.g. user just pressed Enter)
         if not parts or parts[0] == '':
             return 
         
-        # Get the first item (the command) and lowercase it.
+        # Safe lowercasing of the command verb
         cmd = parts[0].lower()
 
         if cmd == "help":
@@ -110,14 +124,18 @@ class ChatApplication:
             print("  connect <peer_name>  - Establish a secure connection with a peer.")
             print("  send <peer_name> <msg> - Send a message to a connected peer.")
             print("  exit                 - Quit the application.")
+        
         elif cmd == "peers":
             if not self.peers:
                 print("No peers found yet.")
             else:
                 print("Discovered Peers:")
                 for name, info in self.peers.items():
+                    # info is tuple: (ip, port, pkey)
                     status = "Connected" if self.transport.is_connected(name) else "Disconnected"
-                    print(f"  - {name} ({status})")
+                    # Display the IP and Port stored in discovery to verify they match
+                    print(f"  - {name} [{info[0]}:{info[1]}] ({status})")
+        
         elif cmd == "connect":
             if len(parts) < 2:
                 print("Usage: connect <peer_name>")
@@ -129,6 +147,7 @@ class ChatApplication:
                 self.transport.connect(peer_name, ip, port, pkey_b64)
             else:
                 print(f"Error: Peer '{peer_name}' not found.")
+        
         elif cmd == "send":
             if len(parts) < 3:
                 print("Usage: send <peer_name> <message>")
@@ -139,9 +158,12 @@ class ChatApplication:
                 print(f"Message sent to {peer_name}.")
             else:
                 print(f"Error: Not connected to '{peer_name}'. Use 'connect' first.")
+        
         elif cmd == "exit":
             self.stop()
-            exit(0)
+            import sys
+            sys.exit(0)
+        
         else:
             if command:
                 print(f"Unknown command: '{command}'. Type 'help'.")
