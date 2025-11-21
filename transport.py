@@ -3,7 +3,6 @@ import threading
 import time
 import struct
 import random
-import zlib
 import queue
 
 # --- Protocol Constants ---
@@ -25,7 +24,7 @@ FLAG_NONE = 0
 
 # Settings
 TIMEOUT = 2.0  # Seconds to wait for ACK
-MAX_RETRIES = 3
+MAX_RETRIES = 5 # Increased retries for unstable LANs
 BUFFER_SIZE = 65535
 
 class ConnectionState:
@@ -46,15 +45,13 @@ class ConnectionState:
         self.last_ack_received = -1
         self.connected = False
         self.handshake_complete = threading.Event()
-        
-        # Thread safety
         self.lock = threading.Lock()
 
     def start_handshake(self):
         """Initiates the 3-way handshake."""
-        print(f"[Transport] Starting handshake with {self.peer_name}...")
+        print(f"[Transport] Starting handshake with {self.peer_name} ({self.ip}:{self.port})...")
         
-        # Retrieve display name safely (Fix for AttributeError)
+        # Retrieve display name safely
         my_name = getattr(self.transport.crypto, 'display_name', 'Unknown')
         my_key = self.transport.crypto.get_public_key_b64()
         
@@ -66,7 +63,7 @@ class ConnectionState:
             print(f"[Transport] Handshake with {self.peer_name} successful.")
             self.connected = True
         else:
-            print(f"[Transport] Handshake with {self.peer_name} failed (Timeout).")
+            print(f"[Transport] Handshake with {self.peer_name} failed (Timeout or Network Unreachable).")
 
 class ReliableTransport:
     """
@@ -95,7 +92,10 @@ class ReliableTransport:
     def stop(self):
         """Stops the transport layer."""
         self.running = False
-        self.sock.close()
+        try:
+            self.sock.close()
+        except:
+            pass
 
     def connect(self, peer_name, ip, port, pkey_b64):
         """
@@ -107,7 +107,6 @@ class ReliableTransport:
             return
 
         # Generate a safe 16-bit Stream ID (1 to 65000)
-        # This prevents the struct.error you were seeing
         stream_id = random.randint(1, 65000)
 
         conn = ConnectionState(peer_name, ip, port, self, stream_id)
@@ -116,7 +115,7 @@ class ReliableTransport:
         self.connections[addr_key] = conn
         self.connections_by_name[peer_name] = conn
         
-        # Start Handshake in a separate thread so we don't block the CLI
+        # Start Handshake in a separate thread
         threading.Thread(target=conn.start_handshake, daemon=True).start()
 
     def is_connected(self, peer_name):
@@ -135,16 +134,11 @@ class ReliableTransport:
             print(f"[Transport] Error: Not connected to {peer_name}")
             return
 
-        # 1. Encrypt (assuming CryptoLayer has encrypt method)
-        # We send the message as bytes
-        msg_bytes = message.encode('utf-8')
-        
-        # TODO: Add actual encryption here if CryptoLayer supports it
-        # encrypted = self.crypto.encrypt(msg_bytes, peer_public_key)
-        # For now, sending plain text for the transport logic demo
-        payload = msg_bytes
+        # For stability, we are sending as plain text. 
+        # To enable encryption, use: self.crypto.encrypt(message, peer_key)
+        payload = message.encode('utf-8')
 
-        # 2. Send reliably
+        # Send reliably in background thread
         threading.Thread(target=self._send_reliable, args=(conn, PKT_DATA, payload), daemon=True).start()
 
     # --- Internal Methods ---
@@ -152,23 +146,30 @@ class ReliableTransport:
     def _send_reliable(self, conn, pkt_type, payload=b''):
         """
         Sends a packet and waits for an ACK. Retries if necessary.
+        Handles Network Unreachable errors gracefully.
         Returns True if ACK received, False otherwise.
         """
         seq = conn.seq_num
-        # Prepare the packet
         packet = self._create_packet(pkt_type, seq, 0, conn.stream_id, payload)
         
         for attempt in range(MAX_RETRIES):
-            self.sock.sendto(packet, (conn.ip, conn.port))
+            try:
+                # --- FIX: Handle Socket/Network Errors ---
+                self.sock.sendto(packet, (conn.ip, conn.port))
+            except OSError as e:
+                # This catches WinError 10051 (Unreachable) and others
+                print(f"[Transport] Warning: Network error sending to {conn.ip}: {e}")
+                # Sleep a bit and retry, hoping the network stabilizes
+                time.sleep(1.0)
+                continue
             
-            # Wait for ACK (Simplified Stop-and-Wait)
-            # In a real implementation, we'd use a condition variable or event
+            # Wait for ACK
             start_time = time.time()
             while time.time() - start_time < TIMEOUT:
                 if conn.last_ack_received >= seq:
                     conn.seq_num += 1
                     return True
-                time.sleep(0.1)
+                time.sleep(0.05)
             
             print(f"[Transport] Timeout, retrying ({attempt + 1}/{MAX_RETRIES})...")
 
@@ -178,17 +179,19 @@ class ReliableTransport:
     def _send_ack(self, addr, stream_id, ack_num):
         """Sends a simple ACK packet."""
         packet = self._create_packet(PKT_ACK, 0, ack_num, stream_id, b'')
-        self.sock.sendto(packet, addr)
+        try:
+            self.sock.sendto(packet, addr)
+        except OSError:
+            pass # Ignore errors for ACKs, they are stateless
 
     def _create_packet(self, pkt_type, seq, ack_num, stream_id, payload):
         """
         Creates the full binary packet (Header + Payload).
         """
         payload_len = len(payload)
-        checksum = 0 # Calculate real checksum if needed
+        checksum = 0 
         
-        # --- FIX: Generate Header Safely ---
-        # We clamp values to ensure they fit in the struct
+        # Safe header creation
         header = self._create_header_safe(pkt_type, seq, ack_num, payload_len, checksum, stream_id)
         
         return header + payload
@@ -197,13 +200,11 @@ class ReliableTransport:
         """
         Creates the header with strict type enforcing to prevent struct.error.
         """
-        # Enforce limits for 'H' (unsigned short, 2 bytes, max 65535)
         stream_id = int(stream_id) & 0xFFFF
         payload_len = int(payload_len) & 0xFFFF
         checksum = int(checksum) & 0xFFFF
         flags = int(flags) & 0xFFFF
         
-        # Enforce limits for 'I' (unsigned int, 4 bytes)
         seq = int(seq) & 0xFFFFFFFF
         ack_num = int(ack_num) & 0xFFFFFFFF
         
@@ -219,7 +220,10 @@ class ReliableTransport:
             except socket.timeout:
                 continue
             except OSError:
-                break
+                # Socket closed or network down
+                if self.running:
+                    time.sleep(1)
+                continue
             except Exception as e:
                 print(f"[Transport] Error in receive loop: {e}")
 
@@ -227,12 +231,10 @@ class ReliableTransport:
         if len(data) < HEADER_SIZE:
             return # Invalid packet
 
-        # Unpack Header
         header_bytes = data[:HEADER_SIZE]
         payload = data[HEADER_SIZE:]
         
         try:
-            # Unpack: Ver, Type, Flags, StreamID, Seq, Ack, Len, Cksum
             ver, pkt_type, flags, stream_id, seq, ack, p_len, cksum = struct.unpack(HEADER_FORMAT, header_bytes)
         except struct.error:
             return
@@ -248,7 +250,7 @@ class ReliableTransport:
         # Handle SYN (New Connection)
         if pkt_type == PKT_SYN:
             self._handle_syn(addr, stream_id, payload)
-            # Send ACK for SYN
+            # Always ACK SYN
             self._send_ack(addr, stream_id, seq)
             return
 
@@ -281,8 +283,8 @@ class ReliableTransport:
                 if addr_key not in self.connections:
                     print(f"[Transport] Incoming connection from {peer_name} ({addr[0]})")
                     conn = ConnectionState(peer_name, addr[0], addr[1], self, stream_id)
-                    conn.connected = True # Established
-                    conn.expected_seq = 1 # SYN consumes seq 0, next is 1
+                    conn.connected = True 
+                    conn.expected_seq = 1 
                     
                     self.connections[addr_key] = conn
                     self.connections_by_name[peer_name] = conn

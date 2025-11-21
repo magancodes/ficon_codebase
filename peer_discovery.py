@@ -48,12 +48,39 @@ class PeerDiscovery:
             self.zeroconf.close()
             print(" [Discovery] Stopped.")
 
+    def _get_best_ip(self):
+        """
+        Robustly attempts to find the LAN IP address.
+        Works even without internet access or gateway.
+        """
+        # Method 1: Try connecting to a pseudo-private IP. 
+        # This doesn't send packets but checks routing table for the best interface.
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('10.255.255.255', 1))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            pass
+
+        # Method 2: Hostname resolution (Good for Windows isolated LANs)
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            pass
+            
+        # Fallback
+        return '127.0.0.1'
+
     def _register_service(self):
         """Registers this peer's service on the network."""
         
-        # --- FIX: Use the real port passed from Transport Layer ---
+        # Use the real port passed from Transport Layer
         port = self.listen_port 
-        # ----------------------------------------------------------
+        
+        # Use robust IP detection
+        ip_address_str = self._get_best_ip()
 
         properties = {
             'txtvers': '1',
@@ -61,18 +88,6 @@ class PeerDiscovery:
             'pkey': self.public_key_b64.encode('utf-8')
         }
         
-        # Get local IP address
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        ip_address_str = '127.0.0.1'
-        try:
-            # Connect to a public DNS to determine the best local interface IP
-            s.connect(('8.8.8.8', 1)) 
-            ip_address_str = s.getsockname()[0]
-        except Exception:
-            pass
-        finally:
-            s.close()
-
         instance_name = f"{self.display_name}._p2pchat"
         full_service_name = f"{instance_name}.{self.service_type}"
 
@@ -144,10 +159,13 @@ class PeerListener(ServiceListener):
             if display_name and public_key and display_name != self.self_name:
                 if display_name not in self.peers:
                     print(f" [Discovery] Peer found: {display_name} at {address}:{port}")
+                # Update peer info regardless of whether they were new or not
                 self.peers[display_name] = (address, port, public_key)
                 self._update_peers()
         except Exception as e:
             print(f" [Discovery] Error processing info: {e}")
 
     def _get_display_name_from_info_name(self, name: str) -> str:
+        """Extracts the display name from the full service instance name."""
+        # e.g., "Alice._p2pchat._lan-chat._udp.local." -> "Alice"
         return name.split('._p2pchat.')[0]
