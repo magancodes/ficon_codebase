@@ -16,6 +16,13 @@ class ChatApplication:
     def __init__(self, display_name):
         self.display_name = display_name
         self.crypto = CryptoLayer()
+        
+        # --- FIX FOR ATTRIBUTE ERROR ---
+        # Your transport.py expects the crypto object to hold the display_name.
+        # We manually attach it here to satisfy that requirement.
+        self.crypto.display_name = self.display_name 
+        # -------------------------------
+
         self.peer_discovery = PeerDiscovery(
             service_type=SERVICE_TYPE,
             display_name=self.display_name,
@@ -79,8 +86,6 @@ class ChatApplication:
                 pass
 
             # Non-blocking input check (conceptual)
-            # In a real CLI, you'd use a library like `select` or `prompt_toolkit`
-            # For simplicity, we use a blocking input here.
             try:
                 command = input("> ").strip()
                 self.process_command(command)
@@ -92,14 +97,12 @@ class ChatApplication:
         """Processes user input from the CLI."""
         parts = command.split(" ", 2)
         
-        # --- START OF FIX ---
-        # Handle empty input (user just pressed Enter)
+        # Handle empty input
         if not parts or parts[0] == '':
             return 
         
         # Get the first item (the command) and lowercase it.
         cmd = parts[0].lower()
-        # --- END OF FIX ---
 
         if cmd == "help":
             print("Commands:")
@@ -124,7 +127,6 @@ class ChatApplication:
                 ip, port, pkey_b64 = self.peers[peer_name]
                 print(f"Connecting to {peer_name} at {ip}:{port}...")
                 self.transport.connect(peer_name, ip, port, pkey_b64)
-                # Connection is asynchronous, success/failure will be logged by transport
             else:
                 print(f"Error: Peer '{peer_name}' not found.")
         elif cmd == "send":
@@ -141,7 +143,6 @@ class ChatApplication:
             self.stop()
             exit(0)
         else:
-            # We check 'command' here to avoid printing "Unknown command: ''"
             if command:
                 print(f"Unknown command: '{command}'. Type 'help'.")
 
@@ -164,4 +165,3 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         app.stop()
-
