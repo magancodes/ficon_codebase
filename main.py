@@ -22,7 +22,7 @@ class ChatApplication:
         # during the handshake. We attach it here manually to satisfy that requirement.
         self.crypto.display_name = self.display_name 
 
-        # Initialize Peer Discovery (but don't start it yet, we need the port first)
+        # Initialize Peer Discovery (but don't start it yet, pehle port chaiye hoga)
         self.peer_discovery = PeerDiscovery(
             service_type=SERVICE_TYPE,
             display_name=self.display_name,
