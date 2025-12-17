@@ -47,15 +47,6 @@ The system is designed to be secure against both passive eavesdroppers and activ
 | **Symmetric Encryption**| **XChaCha20-Poly1305** (AEAD) | `crypto_aead_xchacha20poly1305_ietf_encrypt` |
 | **General-Purpose Hash** | **BLAKE2b** | `crypto_generichash` |
 
-For ongoing conversations, the protocol implements a **Double Ratchet** algorithm. This provides:
-* **Forward Secrecy:** A compromise of session keys at one point in time does not allow an attacker to decrypt past messages.
-* **Post-Compromise Security:** The protocol can "heal" itself, re-establishing security for future messages even after a device's state has been compromised.
 
-## 🛠️ Technology Stack
 
-This project is designed with security and performance as primary goals.
-
-* **Language:** **Rust** is the recommended language due to its compile-time guarantees for memory safety and thread safety, which are critical for building secure, concurrent network applications.
-* **Cryptography:** **libsodium** (or its Rust bindings) is used for all cryptographic operations. It provides a high-level, audited, and easy-to-use API that abstracts away the complexities of low-level crypto.
-* **Peer Discovery:** A cross-platform **Zeroconf** library (e.g., `zeroconf` crate for Rust) is used to handle the mDNS/DNS-SD protocol.
 
