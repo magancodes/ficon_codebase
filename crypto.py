@@ -73,7 +73,7 @@ class CryptoLayer:
         my_signature = self.sign_data(transcript)
         send_func(my_signature)
 
-        # 5. Receive and verify their signature
+        # 5. bhai verify ka structure to reh gya tha :)
         peer_signature = receive_func()
         if not peer_signature:
             print(f"[{peer_name}] Failed to receive peer's signature.")
